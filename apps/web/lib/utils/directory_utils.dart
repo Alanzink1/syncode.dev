@@ -53,3 +53,23 @@ Future<web.FileSystemFileHandle> getFileHandleByPath(
   final fileHandle = await current.getFileHandle(parts.last, options).toDart;
   return fileHandle as web.FileSystemFileHandle;
 }
+
+Future<void> deleteFileByPath(
+  web.FileSystemDirectoryHandle root,
+  String path,
+) async {
+  final parts = path.split('/');
+  var current = root;
+  for (var i = 0; i < parts.length - 1; i++) {
+    final name = parts[i];
+    final optionsAny = JSObject();
+    optionsAny['create'] = false.toJS;
+    final promise = current.callMethod('getDirectoryHandle'.toJS, name.toJS, optionsAny) as JSPromise;
+    current = await promise.toDart as web.FileSystemDirectoryHandle;
+  }
+  
+  final optionsAny = JSObject();
+  optionsAny['recursive'] = false.toJS;
+  final promise = current.callMethod('removeEntry'.toJS, parts.last.toJS, optionsAny) as JSPromise;
+  await promise.toDart;
+}
