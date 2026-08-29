@@ -566,7 +566,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Syncode Workspace', style: Theme.of(context).textTheme.headlineMedium),
+            Image.asset('assets/syncode.dev_logotipe.png', height: 80),
             const SizedBox(height: 24),
             TextField(
               controller: _usernameController,
