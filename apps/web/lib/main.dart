@@ -39,20 +39,32 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   web.FileSystemDirectoryHandle? _directoryHandle;
   String _statusMessage = 'Aguardando seleção da pasta local...';
   Timer? _pollingTimer;
-  Map<String, int> _lastModifiedMap = {};
+  final Map<String, int> _lastModifiedMap = {};
   WebSocketChannel? _channel;
-  Map<String, String> _remoteWrites = {};
+  final Map<String, String> _remoteWrites = {};
   Map<String, String> _projectManifest = {};
+  final TextEditingController _roomController = TextEditingController();
+  bool _isConnected = false;
 
   @override
   void initState() {
     super.initState();
-    _connectWebSocket();
   }
 
-  void _connectWebSocket() {
+  void _connectWebSocket(String roomId) {
     try {
       _channel = WebSocketChannel.connect(Uri.parse('ws://localhost:8080'));
+      
+      _channel!.sink.add(jsonEncode({
+        'type': 'JOIN_ROOM',
+        'roomId': roomId,
+      }));
+      
+      setState(() {
+        _isConnected = true;
+        _statusMessage = 'Conectado à sala: $roomId. Selecione a pasta.';
+      });
+
       _channel!.stream.listen((message) async {
         try {
           final data = jsonDecode(message.toString());
@@ -110,6 +122,50 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             setState(() {
               _statusMessage = 'Pasta [$path] deletada remotamente via WS!';
             });
+          } else if (data['type'] == 'REQUEST_FULL_SYNC') {
+            if (_projectManifest.isNotEmpty && _directoryHandle != null) {
+              setState(() {
+                _statusMessage = 'Enviando projeto completo para a rede...';
+              });
+              
+              int sent = 0;
+              for (final entry in _projectManifest.entries) {
+                final path = entry.key;
+                final isDirectory = entry.value == 'DIRECTORY';
+                
+                if (isDirectory) {
+                  final message = jsonEncode({
+                    'type': 'DIR_CREATE',
+                    'path': path,
+                  });
+                  _channel?.sink.add(message);
+                } else {
+                  try {
+                    final fileHandle = await getFileHandleByPath(_directoryHandle!, path);
+                    final content = await _readFileHandleContent(fileHandle);
+                    if (content != null) {
+                      final message = jsonEncode({
+                        'type': 'FILE_UPDATE',
+                        'path': path,
+                        'payload': content,
+                        'hash': entry.value,
+                      });
+                      _channel?.sink.add(message);
+                    }
+                  } catch (_) {}
+                }
+                
+                sent++;
+                // Throttle: pausa 50ms a cada 5 itens para evitar estouro de buffer no WS / CPU
+                if (sent % 5 == 0) {
+                  await Future.delayed(const Duration(milliseconds: 50));
+                }
+              }
+              
+              setState(() {
+                _statusMessage = 'Sincronização completa despachada ($sent itens)!';
+              });
+            }
           }
         } catch (e) {
           debugPrint(e.toString());
@@ -258,6 +314,16 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     }
   }
 
+  void _requestFullSync() {
+    if (_channel != null) {
+      final message = jsonEncode({'type': 'REQUEST_FULL_SYNC'});
+      _channel!.sink.add(message);
+      setState(() {
+        _statusMessage = 'Solicitação de sincronização enviada!';
+      });
+    }
+  }
+
   Future<void> _buildManifest() async {
     if (_directoryHandle == null) return;
     setState(() {
@@ -289,22 +355,61 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('Syncode.dev - v0.1'),
+        title: const Text('Syncode.dev - v0.4'),
       ),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Text(
-              _statusMessage,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _onSelectFolder,
-              icon: const Icon(Icons.folder_open),
-              label: const Text('Selecionar Pasta'),
-            ),
+            if (!_isConnected) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 64, vertical: 16),
+                child: TextField(
+                  controller: _roomController,
+                  decoration: const InputDecoration(
+                    labelText: 'ID da Sala (ex: projeto-web)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  if (_roomController.text.trim().isNotEmpty) {
+                    _connectWebSocket(_roomController.text.trim());
+                  } else {
+                    setState(() {
+                      _statusMessage = 'Digite um ID para a sala primeiro.';
+                    });
+                  }
+                },
+                icon: const Icon(Icons.login),
+                label: const Text('Entrar na Sala'),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                _statusMessage,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Colors.red),
+              ),
+            ] else ...[
+              Text(
+                _statusMessage,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: _onSelectFolder,
+                icon: const Icon(Icons.folder_open),
+                label: const Text('Selecionar Pasta Local'),
+              ),
+              if (_directoryHandle != null) ...[
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: _requestFullSync,
+                  icon: const Icon(Icons.download),
+                  label: const Text('Baixar Projeto da Rede'),
+                ),
+              ],
+            ],
           ],
         ),
       ),

@@ -52,7 +52,7 @@ Future<web.FileSystemFileHandle> getFileHandleByPath(
   }
   final options = web.FileSystemGetFileOptions(create: true);
   final fileHandle = await current.getFileHandle(parts.last, options).toDart;
-  return fileHandle as web.FileSystemFileHandle;
+  return fileHandle;
 }
 
 Future<web.FileSystemDirectoryHandle> createDirectoryByPath(
