@@ -11,14 +11,25 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  web: ^0.5.1
+  web: ^1.1.1
   web_socket_channel: ^3.0.1
   crypto: ^3.0.7
+  flutter_webrtc: ^1.6.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  web:
+    generate: true
+    image_path: "assets/syncode_logo.png"
+    background_color: "#1E1E1E"
+    theme_color: "#1E1E1E"
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/
