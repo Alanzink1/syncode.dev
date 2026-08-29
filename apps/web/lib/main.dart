@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'package:flutter/material.dart';
+import 'package:syncode_web/utils/crypto_utils.dart';
+import 'package:syncode_web/utils/directory_utils.dart';
 import 'package:web/web.dart' as web;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -39,6 +42,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   int _lastModified = 0;
   WebSocketChannel? _channel;
   String _lastWrittenContent = '';
+  Map<String, String> _projectManifest = {};
 
   @override
   void initState() {
@@ -110,6 +114,18 @@ class _SyncodeHomeState extends State<SyncodeHome> {
       final dynamic textAny = await file.text().toDart;
       return textAny.toString();
     } catch (e) {
+      debugPrint(e.toString());
+      return null;
+    }
+  }
+
+  Future<String?> _readFileHandleContent(web.FileSystemFileHandle fileHandle) async {
+    try {
+      final file = await fileHandle.getFile().toDart;
+      final dynamic textAny = await file.text().toDart;
+      return textAny.toString();
+    } catch (e) {
+      debugPrint(e.toString());
       return null;
     }
   }
@@ -139,12 +155,35 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         _directoryHandle = handle;
         _statusMessage = 'Pasta selecionada: ${handle.name}';
       });
+      await _buildManifest();
       _startPolling();
     } catch (e) {
       setState(() {
         _statusMessage = 'Seleção cancelada ou erro: $e';
       });
     }
+  }
+
+  Future<void> _buildManifest() async {
+    if (_directoryHandle == null) return;
+    setState(() {
+      _statusMessage = 'Construindo manifest...';
+    });
+    
+    final newManifest = <String, String>{};
+    await scanDirectory(_directoryHandle!, '', (path, fileHandle) async {
+      final content = await _readFileHandleContent(fileHandle);
+      if (content != null) {
+        newManifest[path] = hashFileContent(content);
+      }
+    });
+
+    _projectManifest = newManifest;
+    setState(() {
+      _statusMessage = 'Manifest gerado! (${newManifest.length} arquivos mapeados)';
+    });
+    
+    debugPrint(jsonEncode(newManifest));
   }
 
   @override
