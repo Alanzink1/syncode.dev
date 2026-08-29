@@ -20,7 +20,8 @@ class SyncodeApp extends StatelessWidget {
     return MaterialApp(
       title: 'Syncode.dev',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),
         useMaterial3: true,
       ),
       home: const SyncodeHome(),
@@ -43,32 +44,90 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   WebSocketChannel? _channel;
   final Map<String, String> _remoteWrites = {};
   Map<String, String> _projectManifest = {};
+  
+  final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _roomController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _chatController = TextEditingController();
+  
   bool _isConnected = false;
+  List<dynamic> _participants = [];
+  List<Map<String, dynamic>> _chatMessages = [];
+  String _myUserId = '';
+  bool _iAmHost = false;
+  bool _canPairProgram = false;
 
   @override
   void initState() {
     super.initState();
   }
 
-  void _connectWebSocket(String roomId) {
+  void _connectToRoom(String action, String roomId, String password, String username) {
+    if (username.isEmpty || roomId.isEmpty) {
+      setState(() => _statusMessage = 'Preencha o Nickname e a Sala.');
+      return;
+    }
     try {
       _channel = WebSocketChannel.connect(Uri.parse('ws://localhost:8080'));
       
       _channel!.sink.add(jsonEncode({
-        'type': 'JOIN_ROOM',
+        'type': action,
         'roomId': roomId,
+        'password': password,
+        'username': username,
       }));
       
       setState(() {
-        _isConnected = true;
-        _statusMessage = 'Conectado à sala: $roomId. Selecione a pasta.';
+        _statusMessage = 'Conectando à sala...';
       });
 
       _channel!.stream.listen((message) async {
         try {
           final data = jsonDecode(message.toString());
-          if (data['type'] == 'FILE_UPDATE') {
+          
+          if (data['type'] == 'ROOM_JOINED') {
+             setState(() {
+               _isConnected = true;
+               _participants = data['participants'];
+               final me = _participants.firstWhere((p) => p['username'] == username);
+               _myUserId = me['userId'];
+               _iAmHost = me['isHost'];
+               _canPairProgram = me['canPairProgram'];
+               _statusMessage = 'Conectado! Você é ${_iAmHost ? "Host" : "Visitante"}.';
+             });
+          } else if (data['type'] == 'USER_JOINED') {
+             setState(() {
+               _participants.add(data['participant']);
+             });
+          } else if (data['type'] == 'USER_LEFT') {
+             setState(() {
+               _participants.removeWhere((p) => p['userId'] == data['userId']);
+             });
+          } else if (data['type'] == 'CHAT_MESSAGE') {
+             setState(() {
+               _chatMessages.add({
+                 'sender': data['sender'],
+                 'message': data['message'],
+                 'timestamp': data['timestamp'],
+               });
+             });
+          } else if (data['type'] == 'PERMISSION_UPDATED') {
+             setState(() {
+               for (var p in _participants) {
+                 if (p['userId'] == data['userId']) {
+                   p['canPairProgram'] = data['canPairProgram'];
+                 }
+               }
+               if (data['userId'] == _myUserId) {
+                 _canPairProgram = data['canPairProgram'];
+               }
+             });
+          } else if (data['type'] == 'ERROR') {
+             setState(() {
+               _statusMessage = data['message'];
+               if (!_isConnected) _channel?.sink.close();
+             });
+          } else if (data['type'] == 'FILE_UPDATE') {
             final path = data['path'] as String;
             final payload = data['payload'] as String;
             final hash = hashFileContent(payload);
@@ -200,7 +259,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   }
 
   Future<void> _scanForChanges() async {
-    if (_directoryHandle == null) return;
+    if (_directoryHandle == null || !_canPairProgram) return;
     
     final currentScanPaths = <String>{};
     
@@ -371,66 +430,210 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('Syncode.dev - v0.4'),
-      ),
-      body: Center(
+      body: !_isConnected ? _buildLoginScreen() : _buildDashboardScreen(),
+    );
+  }
+
+  Widget _buildLoginScreen() {
+    return Center(
+      child: Container(
+        width: 400,
+        padding: const EdgeInsets.all(32),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E1E),
+          borderRadius: BorderRadius.circular(12),
+        ),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            if (!_isConnected) ...[
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 64, vertical: 16),
-                child: TextField(
-                  controller: _roomController,
-                  decoration: const InputDecoration(
-                    labelText: 'ID da Sala (ex: projeto-web)',
-                    border: OutlineInputBorder(),
-                  ),
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Syncode Workspace', style: Theme.of(context).textTheme.headlineMedium),
+            const SizedBox(height: 24),
+            TextField(
+              controller: _usernameController,
+              decoration: const InputDecoration(labelText: 'Seu Nickname', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _roomController,
+              decoration: const InputDecoration(labelText: 'ID da Sala', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _passwordController,
+              decoration: const InputDecoration(labelText: 'Senha (opcional)', border: OutlineInputBorder()),
+              obscureText: true,
+            ),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton(
+                  onPressed: () => _connectToRoom('CREATE_ROOM', _roomController.text.trim(), _passwordController.text, _usernameController.text.trim()),
+                  child: const Text('Criar Sala (Host)'),
                 ),
-              ),
-              ElevatedButton.icon(
-                onPressed: () {
-                  if (_roomController.text.trim().isNotEmpty) {
-                    _connectWebSocket(_roomController.text.trim());
-                  } else {
-                    setState(() {
-                      _statusMessage = 'Digite um ID para a sala primeiro.';
-                    });
-                  }
-                },
-                icon: const Icon(Icons.login),
-                label: const Text('Entrar na Sala'),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                _statusMessage,
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Colors.red),
-              ),
-            ] else ...[
-              Text(
-                _statusMessage,
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: _onSelectFolder,
-                icon: const Icon(Icons.folder_open),
-                label: const Text('Selecionar Pasta Local'),
-              ),
-              if (_directoryHandle != null) ...[
-                const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: _requestFullSync,
-                  icon: const Icon(Icons.download),
-                  label: const Text('Baixar Projeto da Rede'),
+                ElevatedButton(
+                  onPressed: () => _connectToRoom('JOIN_ROOM', _roomController.text.trim(), _passwordController.text, _usernameController.text.trim()),
+                  child: const Text('Entrar'),
                 ),
               ],
-            ],
+            ),
+            const SizedBox(height: 16),
+            Text(_statusMessage, style: const TextStyle(color: Colors.red)),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildDashboardScreen() {
+    return Row(
+      children: [
+        // Left Column: Participants
+        Container(
+          width: 250,
+          color: const Color(0xFF121212),
+          child: Column(
+            children: [
+              AppBar(title: const Text('Membros'), backgroundColor: Colors.transparent, elevation: 0),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _participants.length,
+                  itemBuilder: (context, index) {
+                    final p = _participants[index];
+                    return ListTile(
+                      leading: Icon(Icons.person, color: p['canPairProgram'] ? Colors.green : Colors.grey),
+                      title: Text('${p['username']} ${p['isHost'] ? "👑" : ""}'),
+                      trailing: _iAmHost && !p['isHost']
+                          ? IconButton(
+                              icon: Icon(p['canPairProgram'] ? Icons.code_off : Icons.code),
+                              onPressed: () {
+                                _channel?.sink.add(jsonEncode({
+                                  'type': 'SYNC_PERMISSION',
+                                  'targetUserId': p['userId'],
+                                  'canPairProgram': !p['canPairProgram'],
+                                }));
+                              },
+                            )
+                          : null,
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        // Center Column: Video & Sync
+        Expanded(
+          child: Column(
+            children: [
+              AppBar(
+                title: Text('Sala: ${_roomController.text}'),
+                backgroundColor: const Color(0xFF1A1A1A),
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.exit_to_app, color: Colors.red),
+                    onPressed: () {
+                      _channel?.sink.close();
+                      setState(() {
+                        _isConnected = false;
+                        _participants.clear();
+                        _chatMessages.clear();
+                        _directoryHandle = null;
+                        _pollingTimer?.cancel();
+                      });
+                    },
+                  ),
+                ],
+              ),
+              Expanded(
+                child: Center(
+                  child: Text('Ninguém está transmitindo a tela ainda.', style: TextStyle(color: Colors.white54)),
+                ),
+              ),
+              Container(
+                height: 100,
+                color: const Color(0xFF1A1A1A),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(_statusMessage, style: const TextStyle(color: Colors.amber)),
+                    const SizedBox(width: 24),
+                    ElevatedButton.icon(
+                      onPressed: _canPairProgram ? _onSelectFolder : null,
+                      icon: const Icon(Icons.folder),
+                      label: const Text('Selecionar Pasta Local'),
+                    ),
+                    if (_directoryHandle != null) ...[
+                      const SizedBox(width: 16),
+                      ElevatedButton.icon(
+                        onPressed: _canPairProgram ? _requestFullSync : null,
+                        icon: const Icon(Icons.download),
+                        label: const Text('Sincronizar Tudo'),
+                      ),
+                    ]
+                  ],
+                ),
+              )
+            ],
+          ),
+        ),
+        // Right Column: Chat
+        Container(
+          width: 300,
+          color: const Color(0xFF121212),
+          child: Column(
+            children: [
+              AppBar(title: const Text('Chat'), backgroundColor: Colors.transparent, elevation: 0),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _chatMessages.length,
+                  itemBuilder: (context, index) {
+                    final msg = _chatMessages[index];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(msg['sender'], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal)),
+                          Text(msg['message']),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _chatController,
+                        decoration: const InputDecoration(hintText: 'Digite...', border: OutlineInputBorder()),
+                        onSubmitted: (text) {
+                          if (text.isNotEmpty) {
+                            _channel?.sink.add(jsonEncode({'type': 'CHAT_MESSAGE', 'message': text}));
+                            _chatController.clear();
+                          }
+                        },
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.send),
+                      onPressed: () {
+                        if (_chatController.text.isNotEmpty) {
+                          _channel?.sink.add(jsonEncode({'type': 'CHAT_MESSAGE', 'message': _chatController.text}));
+                          _chatController.clear();
+                        }
+                      },
+                    )
+                  ],
+                ),
+              )
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
