@@ -46,6 +46,20 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     }
   }
 
+  Future<bool> _writeFileContent(String filename, String content) async {
+    if (_directoryHandle == null) return false;
+    try {
+      final options = web.FileSystemGetFileOptions(create: true);
+      final fileHandle = await _directoryHandle!.getFileHandle(filename, options).toDart;
+      final writable = await fileHandle.createWritable().toDart;
+      await writable.write(content.toJS).toDart;
+      await writable.close().toDart;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   Future<void> _onSelectFolder() async {
     try {
       final options = web.DirectoryPickerOptions(mode: 'readwrite');
