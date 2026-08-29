@@ -1,4 +1,6 @@
+import 'dart:js_interop';
 import 'package:flutter/material.dart';
+import 'package:web/web.dart' as web;
 
 void main() {
   runApp(const SyncodeApp());
@@ -28,12 +30,23 @@ class SyncodeHome extends StatefulWidget {
 }
 
 class _SyncodeHomeState extends State<SyncodeHome> {
+  web.FileSystemDirectoryHandle? _directoryHandle;
   String _statusMessage = 'Aguardando seleção da pasta local...';
 
-  void _onSelectFolder() {
-    setState(() {
-      _statusMessage = 'Botão pressionado. Funcionalidade na próxima etapa.';
-    });
+  Future<void> _onSelectFolder() async {
+    try {
+      final options = web.DirectoryPickerOptions(mode: 'readwrite');
+      final handle = await web.window.showDirectoryPicker(options).toDart;
+      
+      setState(() {
+        _directoryHandle = handle;
+        _statusMessage = 'Pasta selecionada: ${handle.name}';
+      });
+    } catch (e) {
+      setState(() {
+        _statusMessage = 'Seleção cancelada ou erro: $e';
+      });
+    }
   }
 
   @override
