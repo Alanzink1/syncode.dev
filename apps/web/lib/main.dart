@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'package:flutter/material.dart';
+import 'package:syncode_web/utils/crypto_utils.dart';
+import 'package:syncode_web/utils/directory_utils.dart';
 import 'package:web/web.dart' as web;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -36,9 +39,10 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   web.FileSystemDirectoryHandle? _directoryHandle;
   String _statusMessage = 'Aguardando seleção da pasta local...';
   Timer? _pollingTimer;
-  int _lastModified = 0;
+  Map<String, int> _lastModifiedMap = {};
   WebSocketChannel? _channel;
-  String _lastWrittenContent = '';
+  Map<String, String> _remoteWrites = {};
+  Map<String, String> _projectManifest = {};
 
   @override
   void initState() {
@@ -50,13 +54,65 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     try {
       _channel = WebSocketChannel.connect(Uri.parse('ws://localhost:8080'));
       _channel!.stream.listen((message) async {
-        final content = message.toString();
-        _lastWrittenContent = content;
-        final success = await _writeFileContent('demo.txt', content);
-        if (success) {
-          setState(() {
-            _statusMessage = 'Arquivo atualizado remotamente via WS!';
-          });
+        try {
+          final data = jsonDecode(message.toString());
+          if (data['type'] == 'FILE_UPDATE') {
+            final path = data['path'] as String;
+            final payload = data['payload'] as String;
+            final hash = hashFileContent(payload);
+            
+            _remoteWrites[path] = hash;
+            
+            final fileHandle = await getFileHandleByPath(_directoryHandle!, path);
+            final writable = await fileHandle.createWritable().toDart;
+            await writable.write(payload.toJS).toDart;
+            await writable.close().toDart;
+            
+            _projectManifest[path] = hash;
+            setState(() {
+              _statusMessage = 'Arquivo [$path] atualizado remotamente via WS!';
+            });
+          } else if (data['type'] == 'FILE_DELETE') {
+            final path = data['path'] as String;
+            _remoteWrites[path] = 'DELETED';
+            
+            try {
+              await deleteEntryByPath(_directoryHandle!, path);
+            } catch (_) {}
+            
+            _projectManifest.remove(path);
+            _lastModifiedMap.remove(path);
+            
+            setState(() {
+              _statusMessage = 'Arquivo [$path] deletado remotamente via WS!';
+            });
+          } else if (data['type'] == 'DIR_CREATE') {
+            final path = data['path'] as String;
+            _remoteWrites[path] = 'DIR_CREATED';
+            
+            await createDirectoryByPath(_directoryHandle!, path);
+            _projectManifest[path] = 'DIRECTORY';
+            
+            setState(() {
+              _statusMessage = 'Pasta [$path] criada remotamente via WS!';
+            });
+          } else if (data['type'] == 'DIR_DELETE') {
+            final path = data['path'] as String;
+            _remoteWrites[path] = 'DELETED';
+            
+            try {
+              await deleteEntryByPath(_directoryHandle!, path, isDirectory: true);
+            } catch (_) {}
+            
+            _projectManifest.remove(path);
+            _lastModifiedMap.remove(path);
+            
+            setState(() {
+              _statusMessage = 'Pasta [$path] deletada remotamente via WS!';
+            });
+          }
+        } catch (e) {
+          debugPrint(e.toString());
         }
       });
     } catch (e) {
@@ -73,58 +129,112 @@ class _SyncodeHomeState extends State<SyncodeHome> {
 
   void _startPolling() {
     _pollingTimer?.cancel();
-    _pollingTimer = Timer.periodic(const Duration(milliseconds: 1000), (timer) async {
-      await _checkFileChanges('demo.txt');
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 2000), (timer) async {
+      await _scanForChanges();
     });
   }
 
-  Future<void> _checkFileChanges(String filename) async {
+  Future<void> _scanForChanges() async {
     if (_directoryHandle == null) return;
-    try {
-      final options = web.FileSystemGetFileOptions(create: false);
-      final fileHandle = await _directoryHandle!.getFileHandle(filename, options).toDart;
-      final file = await fileHandle.getFile().toDart;
-      final currentModified = file.lastModified;
-      if (currentModified > _lastModified) {
-        _lastModified = currentModified;
-        final content = await _readFileContent(filename);
-        if (content != null && content != _lastWrittenContent) {
-          _lastWrittenContent = content;
-          _channel?.sink.add(content);
-          setState(() {
-            _statusMessage = 'Arquivo alterado e enviado via WS! (Tamanho: ${content.length})';
-          });
+    
+    final currentScanPaths = <String>{};
+    
+    await scanDirectory(_directoryHandle!, '', (path, handle, kind) async {
+      currentScanPaths.add(path);
+      try {
+        if (kind == 'file') {
+          final fileHandle = handle as web.FileSystemFileHandle;
+          final file = await fileHandle.getFile().toDart;
+          final currentModified = file.lastModified;
+          final lastModified = _lastModifiedMap[path] ?? 0;
+          
+          if (currentModified > lastModified) {
+            _lastModifiedMap[path] = currentModified;
+            
+            final content = await _readFileHandleContent(fileHandle);
+            if (content != null) {
+              final hash = hashFileContent(content);
+              
+              if (_remoteWrites[path] == hash) {
+                _projectManifest[path] = hash;
+                _remoteWrites.remove(path);
+                return;
+              }
+              
+              if (_projectManifest[path] != hash) {
+                _projectManifest[path] = hash;
+                final message = jsonEncode({
+                  'type': 'FILE_UPDATE',
+                  'path': path,
+                  'payload': content,
+                  'hash': hash,
+                });
+                _channel?.sink.add(message);
+                setState(() {
+                  _statusMessage = 'Alteração em [$path] despachada via WS!';
+                });
+              }
+            }
+          }
+        } else if (kind == 'directory') {
+          if (_remoteWrites[path] == 'DIR_CREATED') {
+            _projectManifest[path] = 'DIRECTORY';
+            _remoteWrites.remove(path);
+            return;
+          }
+          if (_projectManifest[path] != 'DIRECTORY') {
+            _projectManifest[path] = 'DIRECTORY';
+            final message = jsonEncode({
+              'type': 'DIR_CREATE',
+              'path': path,
+            });
+            _channel?.sink.add(message);
+            setState(() {
+              _statusMessage = 'Criação de pasta [$path] despachada!';
+            });
+          }
         }
+      } catch (e) {
+        debugPrint(e.toString());
       }
-    } catch (e) {
-      debugPrint(e.toString());
+    });
+
+    final deletedPaths = _projectManifest.keys.where((p) => !currentScanPaths.contains(p)).toList();
+    deletedPaths.sort((a, b) => b.length.compareTo(a.length));
+
+    for (final path in deletedPaths) {
+      final isDirectory = _projectManifest[path] == 'DIRECTORY';
+      
+      if (_remoteWrites[path] == 'DELETED') {
+        _projectManifest.remove(path);
+        _lastModifiedMap.remove(path);
+        _remoteWrites.remove(path);
+        continue;
+      }
+
+      _projectManifest.remove(path);
+      _lastModifiedMap.remove(path);
+      
+      final message = jsonEncode({
+        'type': isDirectory ? 'DIR_DELETE' : 'FILE_DELETE',
+        'path': path,
+      });
+      _channel?.sink.add(message);
+      
+      setState(() {
+        _statusMessage = 'Deleção de [$path] despachada via WS!';
+      });
     }
   }
 
-  Future<String?> _readFileContent(String filename) async {
-    if (_directoryHandle == null) return null;
+  Future<String?> _readFileHandleContent(web.FileSystemFileHandle fileHandle) async {
     try {
-      final options = web.FileSystemGetFileOptions(create: true);
-      final fileHandle = await _directoryHandle!.getFileHandle(filename, options).toDart;
       final file = await fileHandle.getFile().toDart;
       final dynamic textAny = await file.text().toDart;
       return textAny.toString();
     } catch (e) {
+      debugPrint(e.toString());
       return null;
-    }
-  }
-
-  Future<bool> _writeFileContent(String filename, String content) async {
-    if (_directoryHandle == null) return false;
-    try {
-      final options = web.FileSystemGetFileOptions(create: true);
-      final fileHandle = await _directoryHandle!.getFileHandle(filename, options).toDart;
-      final writable = await fileHandle.createWritable().toDart;
-      await writable.write(content.toJS).toDart;
-      await writable.close().toDart;
-      return true;
-    } catch (e) {
-      return false;
     }
   }
 
@@ -139,12 +249,39 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         _directoryHandle = handle;
         _statusMessage = 'Pasta selecionada: ${handle.name}';
       });
+      await _buildManifest();
       _startPolling();
     } catch (e) {
       setState(() {
         _statusMessage = 'Seleção cancelada ou erro: $e';
       });
     }
+  }
+
+  Future<void> _buildManifest() async {
+    if (_directoryHandle == null) return;
+    setState(() {
+      _statusMessage = 'Construindo manifest...';
+    });
+    
+    final newManifest = <String, String>{};
+    await scanDirectory(_directoryHandle!, '', (path, handle, kind) async {
+      if (kind == 'file') {
+        final content = await _readFileHandleContent(handle as web.FileSystemFileHandle);
+        if (content != null) {
+          newManifest[path] = hashFileContent(content);
+        }
+      } else if (kind == 'directory') {
+        newManifest[path] = 'DIRECTORY';
+      }
+    });
+
+    _projectManifest = newManifest;
+    setState(() {
+      _statusMessage = 'Manifest gerado! (${newManifest.length} arquivos mapeados)';
+    });
+    
+    debugPrint(jsonEncode(newManifest));
   }
 
   @override

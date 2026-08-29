@@ -41,6 +41,15 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
+  <script>
+    window.getDirectoryEntries = async function(dirHandle) {
+      const entries = [];
+      for await (const entry of dirHandle.values()) {
+        entries.push(entry);
+      }
+      return entries;
+    };
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

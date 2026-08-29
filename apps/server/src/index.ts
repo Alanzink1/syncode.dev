@@ -16,8 +16,20 @@ wss.on('connection', (ws: WebSocket) => {
 
   ws.on('message', (message: Buffer) => {
     const data = message.toString();
-    console.log(`Received message, size: ${data.length} bytes`);
-
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed.type === 'FILE_UPDATE') {
+        console.log(`[FILE_UPDATE] path: ${parsed.path}, hash: ${parsed.hash}`);
+      } else if (parsed.type === 'FILE_DELETE') {
+        console.log(`[FILE_DELETE] path: ${parsed.path}`);
+      } else if (parsed.type === 'DIR_CREATE') {
+        console.log(`[DIR_CREATE] path: ${parsed.path}`);
+      } else if (parsed.type === 'DIR_DELETE') {
+        console.log(`[DIR_DELETE] path: ${parsed.path}`);
+      }
+    } catch (e) {
+      console.log(`Received message, size: ${data.length} bytes`);
+    }
     // Broadcast the message to all OTHER connected clients
     wss.clients.forEach((client) => {
       if (client !== ws && client.readyState === WebSocket.OPEN) {
@@ -36,5 +48,5 @@ wss.on('connection', (ws: WebSocket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`🚀 Syncode v0.1 server running on ws://localhost:${PORT}`);
+  console.log(`🚀 Syncode v0.2 server running on ws://localhost:${PORT}`);
 });
