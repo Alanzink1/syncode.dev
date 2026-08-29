@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:js_interop';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
@@ -32,6 +33,41 @@ class SyncodeHome extends StatefulWidget {
 class _SyncodeHomeState extends State<SyncodeHome> {
   web.FileSystemDirectoryHandle? _directoryHandle;
   String _statusMessage = 'Aguardando seleção da pasta local...';
+  Timer? _pollingTimer;
+  int _lastModified = 0;
+
+  @override
+  void dispose() {
+    _pollingTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 1000), (timer) async {
+      await _checkFileChanges('demo.txt');
+    });
+  }
+
+  Future<void> _checkFileChanges(String filename) async {
+    if (_directoryHandle == null) return;
+    try {
+      final options = web.FileSystemGetFileOptions(create: false);
+      final fileHandle = await _directoryHandle!.getFileHandle(filename, options).toDart;
+      final file = await fileHandle.getFile().toDart;
+      final currentModified = file.lastModified;
+      if (currentModified > _lastModified) {
+        _lastModified = currentModified;
+        final content = await _readFileContent(filename);
+        if (content != null) {
+          setState(() {
+            _statusMessage = 'Arquivo alterado localmente! (Tamanho: ${content.length})';
+          });
+        }
+      }
+    } catch (e) {
+    }
+  }
 
   Future<String?> _readFileContent(String filename) async {
     if (_directoryHandle == null) return null;
@@ -69,6 +105,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         _directoryHandle = handle;
         _statusMessage = 'Pasta selecionada: ${handle.name}';
       });
+      _startPolling();
     } catch (e) {
       setState(() {
         _statusMessage = 'Seleção cancelada ou erro: $e';
