@@ -20,6 +20,8 @@ wss.on('connection', (ws: WebSocket) => {
       const parsed = JSON.parse(data);
       if (parsed.type === 'FILE_UPDATE') {
         console.log(`[FILE_UPDATE] path: ${parsed.path}, hash: ${parsed.hash}`);
+      } else if (parsed.type === 'FILE_DELETE') {
+        console.log(`[FILE_DELETE] path: ${parsed.path}`);
       }
     } catch (e) {
       console.log(`Received message, size: ${data.length} bytes`);

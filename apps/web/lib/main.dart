@@ -72,6 +72,17 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             setState(() {
               _statusMessage = 'Arquivo [$path] atualizado remotamente via WS!';
             });
+          } else if (data['type'] == 'FILE_DELETE') {
+            final path = data['path'] as String;
+            _remoteWrites[path] = 'DELETED';
+            
+            await deleteFileByPath(_directoryHandle!, path);
+            _projectManifest.remove(path);
+            _lastModifiedMap.remove(path);
+            
+            setState(() {
+              _statusMessage = 'Arquivo [$path] deletado remotamente via WS!';
+            });
           }
         } catch (e) {
           debugPrint(e.toString());
@@ -99,7 +110,10 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   Future<void> _scanForChanges() async {
     if (_directoryHandle == null) return;
     
+    final currentScanPaths = <String>{};
+    
     await scanDirectory(_directoryHandle!, '', (path, fileHandle) async {
+      currentScanPaths.add(path);
       try {
         final file = await fileHandle.getFile().toDart;
         final currentModified = file.lastModified;
@@ -137,6 +151,29 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         debugPrint(e.toString());
       }
     });
+
+    final deletedPaths = _projectManifest.keys.where((p) => !currentScanPaths.contains(p)).toList();
+    for (final path in deletedPaths) {
+      if (_remoteWrites[path] == 'DELETED') {
+        _projectManifest.remove(path);
+        _lastModifiedMap.remove(path);
+        _remoteWrites.remove(path);
+        continue;
+      }
+
+      _projectManifest.remove(path);
+      _lastModifiedMap.remove(path);
+      
+      final message = jsonEncode({
+        'type': 'FILE_DELETE',
+        'path': path,
+      });
+      _channel?.sink.add(message);
+      
+      setState(() {
+        _statusMessage = 'Deleção de [$path] despachada via WS!';
+      });
+    }
   }
 
   Future<String?> _readFileHandleContent(web.FileSystemFileHandle fileHandle) async {
