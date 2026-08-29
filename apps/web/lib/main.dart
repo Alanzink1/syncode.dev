@@ -58,20 +58,21 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   bool _iAmHost = false;
   bool _canPairProgram = false;
 
+  // WebRTC P2P (Full Mesh Grid)
+  MediaStream? _localStream;
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
-  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   bool _isScreenSharing = false;
   
-  // WebRTC P2P (Estrela)
-  MediaStream? _localStream;
-  String? _remoteStreamId; // Indica quem está transmitindo para nós
   final Map<String, RTCPeerConnection> _peerConnections = {};
+  final Map<String, RTCVideoRenderer> _remoteRenderers = {};
+  final Map<String, String> _remoteStreamUsernames = {};
+  
+  String? _fullscreenUserId;
 
   @override
   void initState() {
     super.initState();
     _localRenderer.initialize();
-    _remoteRenderer.initialize();
   }
 
   Future<RTCPeerConnection> _createPeerConnection(String targetUserId) async {
@@ -94,8 +95,9 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     
     pc.onTrack = (event) {
       if (event.track.kind == 'video') {
-        _remoteRenderer.srcObject = event.streams[0];
-        setState(() {}); // Força refresh pra mostrar o vídeo
+        setState(() {
+          _remoteRenderers[targetUserId]?.srcObject = event.streams[0];
+        });
       }
     };
     
@@ -141,13 +143,20 @@ class _SyncodeHomeState extends State<SyncodeHome> {
              });
           } else if (data['type'] == 'USER_LEFT') {
              setState(() {
-               _participants.removeWhere((p) => p['userId'] == data['userId']);
-               // Limpa conexão P2P se houver
-               _peerConnections[data['userId']]?.close();
-               _peerConnections.remove(data['userId']);
-               if (_remoteStreamId == data['userId']) {
-                 _remoteStreamId = null;
-                 _remoteRenderer.srcObject = null;
+               final targetUserId = data['userId'];
+               _participants.removeWhere((p) => p['userId'] == targetUserId);
+               
+               // Limpa os dados P2P
+               _peerConnections[targetUserId]?.close();
+               _peerConnections.remove(targetUserId);
+               
+               _remoteRenderers[targetUserId]?.srcObject = null;
+               _remoteRenderers[targetUserId]?.dispose();
+               _remoteRenderers.remove(targetUserId);
+               _remoteStreamUsernames.remove(targetUserId);
+               
+               if (_fullscreenUserId == targetUserId) {
+                 _fullscreenUserId = null;
                }
              });
           } else if (data['type'] == 'CHAT_MESSAGE') {
@@ -243,13 +252,21 @@ class _SyncodeHomeState extends State<SyncodeHome> {
               setState(() => _statusMessage = 'Sincronização delta despachada ($sent itens alterados)!');
             }
           }
-          // --- WebRTC Signaling ---
+          // --- WebRTC Signaling (Mesh) ---
           else if (data['type'] == 'WEBRTC_STREAM_AVAILABLE') {
             final senderId = data['senderId'];
             if (senderId == _myUserId) return;
-            setState(() => _remoteStreamId = senderId);
             
-            // Cria peer e avisa que quer assistir (Offer recvonly)
+            final senderName = _participants.firstWhere((p) => p['userId'] == senderId, orElse: () => {'username': 'Desconhecido'})['username'];
+            
+            final renderer = RTCVideoRenderer();
+            await renderer.initialize();
+            
+            setState(() {
+              _remoteRenderers[senderId] = renderer;
+              _remoteStreamUsernames[senderId] = senderName;
+            });
+            
             final pc = await _createPeerConnection(senderId);
             pc.addTransceiver(kind: RTCRtpMediaType.RTCRtpMediaTypeVideo, init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly));
             final offer = await pc.createOffer();
@@ -262,14 +279,22 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             }));
             
           } else if (data['type'] == 'WEBRTC_STREAM_STOPPED') {
-             if (_remoteStreamId == data['senderId']) {
-               _remoteRenderer.srcObject = null;
-               _peerConnections[data['senderId']]?.close();
-               _peerConnections.remove(data['senderId']);
-               setState(() => _remoteStreamId = null);
-             }
+            final senderId = data['senderId'];
+            setState(() {
+              _peerConnections[senderId]?.close();
+              _peerConnections.remove(senderId);
+              
+              _remoteRenderers[senderId]?.srcObject = null;
+              _remoteRenderers[senderId]?.dispose();
+              _remoteRenderers.remove(senderId);
+              _remoteStreamUsernames.remove(senderId);
+              
+              if (_fullscreenUserId == senderId) {
+                _fullscreenUserId = null;
+              }
+            });
           } else if (data['type'] == 'WEBRTC_OFFER') {
-             // Host recebe Offer de um visitante querendo ver a tela
+             // Outro nó está pedindo para assistir nossa transmissão
              final senderId = data['senderId'];
              final pc = await _createPeerConnection(senderId);
              
@@ -319,7 +344,9 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     _pollingTimer?.cancel();
     _channel?.sink.close();
     _localRenderer.dispose();
-    _remoteRenderer.dispose();
+    for (var renderer in _remoteRenderers.values) {
+      renderer.dispose();
+    }
     for (var pc in _peerConnections.values) {
       pc.close();
     }
@@ -334,6 +361,12 @@ class _SyncodeHomeState extends State<SyncodeHome> {
       };
       _localStream = await navigator.mediaDevices.getDisplayMedia(mediaConstraints);
       _localRenderer.srcObject = _localStream;
+      
+      // Stop nativo pelo navegador
+      _localStream!.getVideoTracks()[0].onEnded = () {
+        _stopScreenShare();
+      };
+      
       setState(() {
         _isScreenSharing = true;
       });
@@ -350,13 +383,17 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     _localStream?.getTracks().forEach((track) => track.stop());
     _localStream = null;
     _localRenderer.srcObject = null;
-    for (var pc in _peerConnections.values) {
-      pc.close();
-    }
-    _peerConnections.clear();
     
+    // Fechar apenas as conexões de espectadores (quem está recebendo nosso vídeo)
+    // Para simplificar no modelo Star/Mesh mesclado, fechamos tudo e recriamos se precisarem ver outros
+    // Como somos Full Mesh real, não podemos matar as _peerConnections das outras telas!
+    // Solução: O backend envia WEBRTC_STREAM_STOPPED, os outros encerram a PC lá.
+    // Aqui nós apenas enviamos o evento:
     setState(() {
       _isScreenSharing = false;
+      if (_fullscreenUserId == _myUserId) {
+        _fullscreenUserId = null;
+      }
     });
     
     _channel?.sink.add(jsonEncode({
@@ -391,25 +428,20 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             final content = await _readFileHandleContent(fileHandle);
             if (content != null) {
               final hash = hashFileContent(content);
-              
               if (_remoteWrites[path] == hash) {
                 _projectManifest[path] = hash;
                 _remoteWrites.remove(path);
                 return;
               }
-              
               if (_projectManifest[path] != hash) {
                 _projectManifest[path] = hash;
-                final message = jsonEncode({
+                _channel?.sink.add(jsonEncode({
                   'type': 'FILE_UPDATE',
                   'path': path,
                   'payload': content,
                   'hash': hash,
-                });
-                _channel?.sink.add(message);
-                setState(() {
-                  _statusMessage = 'Alteração em [$path] despachada via WS!';
-                });
+                }));
+                setState(() => _statusMessage = 'Alteração em [$path] despachada!');
               }
             }
           }
@@ -421,14 +453,8 @@ class _SyncodeHomeState extends State<SyncodeHome> {
           }
           if (_projectManifest[path] != 'DIRECTORY') {
             _projectManifest[path] = 'DIRECTORY';
-            final message = jsonEncode({
-              'type': 'DIR_CREATE',
-              'path': path,
-            });
-            _channel?.sink.add(message);
-            setState(() {
-              _statusMessage = 'Criação de pasta [$path] despachada!';
-            });
+            _channel?.sink.add(jsonEncode({'type': 'DIR_CREATE', 'path': path}));
+            setState(() => _statusMessage = 'Criação de pasta [$path] despachada!');
           }
         }
       } catch (e) {
@@ -452,15 +478,11 @@ class _SyncodeHomeState extends State<SyncodeHome> {
       _projectManifest.remove(path);
       _lastModifiedMap.remove(path);
       
-      final message = jsonEncode({
+      _channel?.sink.add(jsonEncode({
         'type': isDirectory ? 'DIR_DELETE' : 'FILE_DELETE',
         'path': path,
-      });
-      _channel?.sink.add(message);
-      
-      setState(() {
-        _statusMessage = 'Deleção de [$path] despachada via WS!';
-      });
+      }));
+      setState(() => _statusMessage = 'Deleção de [$path] despachada!');
     }
   }
 
@@ -473,7 +495,6 @@ class _SyncodeHomeState extends State<SyncodeHome> {
       final bytes = jsBuffer.toDart.asUint8List();
       return base64Encode(bytes);
     } catch (e) {
-      debugPrint(e.toString());
       return null;
     }
   }
@@ -492,30 +513,23 @@ class _SyncodeHomeState extends State<SyncodeHome> {
       await _buildManifest();
       _startPolling();
     } catch (e) {
-      setState(() {
-        _statusMessage = 'Seleção cancelada ou erro: $e';
-      });
+      setState(() => _statusMessage = 'Seleção cancelada ou erro: $e');
     }
   }
 
   void _requestFullSync() {
     if (_channel != null) {
-      final message = jsonEncode({
+      _channel!.sink.add(jsonEncode({
         'type': 'REQUEST_FULL_SYNC',
         'manifest': _projectManifest,
-      });
-      _channel!.sink.add(message);
-      setState(() {
-        _statusMessage = 'Solicitação de sincronização enviada!';
-      });
+      }));
+      setState(() => _statusMessage = 'Solicitação de sincronização enviada!');
     }
   }
 
   Future<void> _buildManifest() async {
     if (_directoryHandle == null) return;
-    setState(() {
-      _statusMessage = 'Construindo manifest...';
-    });
+    setState(() => _statusMessage = 'Construindo manifest...');
     
     final newManifest = <String, String>{};
     await scanDirectory(_directoryHandle!, '', (path, handle, kind) async {
@@ -530,9 +544,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     });
 
     _projectManifest = newManifest;
-    setState(() {
-      _statusMessage = 'Manifest gerado! (${newManifest.length} arquivos mapeados)';
-    });
+    setState(() => _statusMessage = 'Manifest gerado! (${newManifest.length} arquivos mapeados)');
   }
 
   @override
@@ -593,10 +605,103 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     );
   }
 
+  Widget _buildVideoTile(String id, RTCVideoRenderer renderer, String username, bool isLocal) {
+    return MouseRegion(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Container(
+            color: Colors.black,
+            child: RTCVideoView(renderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain),
+          ),
+          
+          Positioned(
+            bottom: 0, left: 0, right: 0,
+            child: Container(
+              color: Colors.black54,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      isLocal ? "Você" : username,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      overflow: TextOverflow.ellipsis,
+                    )
+                  ),
+                  if (!isLocal)
+                    IconButton(
+                      icon: const Icon(Icons.volume_up, color: Colors.white, size: 20),
+                      onPressed: () {},
+                    ),
+                  IconButton(
+                    icon: Icon(_fullscreenUserId == id ? Icons.fullscreen_exit : Icons.fullscreen, color: Colors.white, size: 20),
+                    onPressed: () {
+                      setState(() {
+                        if (_fullscreenUserId == id) {
+                          _fullscreenUserId = null;
+                        } else {
+                          _fullscreenUserId = id;
+                        }
+                      });
+                    },
+                  )
+                ],
+              ),
+            ),
+          )
+        ],
+      )
+    );
+  }
+
+  Widget _buildVideoGrid() {
+    final activeStreams = <Map<String, dynamic>>[];
+    
+    if (_isScreenSharing) {
+      activeStreams.add({'id': _myUserId, 'renderer': _localRenderer, 'username': 'Você', 'isLocal': true});
+    }
+    
+    for (final entry in _remoteRenderers.entries) {
+      activeStreams.add({'id': entry.key, 'renderer': entry.value, 'username': _remoteStreamUsernames[entry.key] ?? 'Desconhecido', 'isLocal': false});
+    }
+    
+    if (activeStreams.isEmpty) {
+      return const Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.monitor, size: 64, color: Colors.white24),
+          SizedBox(height: 16),
+          Text('Ninguém está transmitindo ainda.', style: TextStyle(color: Colors.white54, fontSize: 18)),
+        ]
+      );
+    }
+    
+    if (_fullscreenUserId != null) {
+      final streamInfo = activeStreams.firstWhere((s) => s['id'] == _fullscreenUserId, orElse: () => activeStreams[0]);
+      return _buildVideoTile(streamInfo['id'], streamInfo['renderer'], streamInfo['username'], streamInfo['isLocal']);
+    }
+    
+    return GridView.builder(
+      padding: const EdgeInsets.all(8),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: activeStreams.length == 1 ? 1 : activeStreams.length <= 4 ? 2 : 3,
+        childAspectRatio: 16 / 9,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+      ),
+      itemCount: activeStreams.length,
+      itemBuilder: (context, index) {
+        final streamInfo = activeStreams[index];
+        return _buildVideoTile(streamInfo['id'], streamInfo['renderer'], streamInfo['username'], streamInfo['isLocal']);
+      },
+    );
+  }
+
   Widget _buildDashboardScreen() {
     return Row(
       children: [
-        // Left Column: Participants
+        // Left Column
         Container(
           width: 250,
           color: const Color(0xFF121212),
@@ -630,7 +735,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             ],
           ),
         ),
-        // Center Column: Video & Sync
+        // Center Column
         Expanded(
           child: Column(
             children: [
@@ -656,26 +761,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
               ),
               Expanded(
                 child: Center(
-                  child: _isScreenSharing 
-                    ? RTCVideoView(_localRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)
-                    : _remoteStreamId != null
-                      ? RTCVideoView(_remoteRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)
-                      : Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Text('Ninguém está transmitindo ainda.', style: TextStyle(color: Colors.white54)),
-                            const SizedBox(height: 16),
-                            ElevatedButton.icon(
-                              onPressed: _startScreenShare,
-                              icon: const Icon(Icons.screen_share),
-                              label: const Text('Compartilhar tela'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.teal,
-                                foregroundColor: Colors.white,
-                              ),
-                            )
-                          ]
-                        )
+                  child: _buildVideoGrid(),
                 ),
               ),
               Container(
@@ -685,16 +771,25 @@ class _SyncodeHomeState extends State<SyncodeHome> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(_statusMessage, style: const TextStyle(color: Colors.amber)),
-                    if (_isScreenSharing) ...[
-                      const SizedBox(width: 24),
+                    const SizedBox(width: 24),
+                    
+                    if (!_isScreenSharing)
+                      ElevatedButton.icon(
+                        onPressed: _startScreenShare,
+                        icon: const Icon(Icons.screen_share),
+                        label: const Text('Compartilhar tela'),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+                      )
+                    else
                       ElevatedButton.icon(
                         onPressed: _stopScreenShare,
                         icon: const Icon(Icons.stop_screen_share),
                         label: const Text('Parar Transmissão'),
                         style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
                       ),
-                    ],
+                      
                     const SizedBox(width: 24),
+                    
                     if (!_iAmHost && !_canPairProgram)
                       ElevatedButton.icon(
                         onPressed: () {
@@ -726,7 +821,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             ],
           ),
         ),
-        // Right Column: Chat
+        // Right Column
         Container(
           width: 300,
           color: const Color(0xFF121212),
