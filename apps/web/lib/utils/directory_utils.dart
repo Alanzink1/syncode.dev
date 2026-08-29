@@ -20,7 +20,7 @@ Future<List<web.FileSystemHandle>> getDirectoryEntries(web.FileSystemDirectoryHa
 Future<void> scanDirectory(
   web.FileSystemDirectoryHandle dirHandle,
   String currentPath,
-  Future<void> Function(String path, web.FileSystemFileHandle fileHandle) onFile,
+  Future<void> Function(String path, web.FileSystemHandle handle, String kind) onEntry,
 ) async {
   final entries = await getDirectoryEntries(dirHandle);
   for (final entry in entries) {
@@ -29,9 +29,10 @@ Future<void> scanDirectory(
     final path = currentPath.isEmpty ? entry.name : '$currentPath/${entry.name}';
     
     if (entry.kind == 'directory') {
-      await scanDirectory(entry as web.FileSystemDirectoryHandle, path, onFile);
+      await onEntry(path, entry, 'directory');
+      await scanDirectory(entry as web.FileSystemDirectoryHandle, path, onEntry);
     } else if (entry.kind == 'file') {
-      await onFile(path, entry as web.FileSystemFileHandle);
+      await onEntry(path, entry, 'file');
     }
   }
 }
@@ -54,9 +55,26 @@ Future<web.FileSystemFileHandle> getFileHandleByPath(
   return fileHandle as web.FileSystemFileHandle;
 }
 
-Future<void> deleteFileByPath(
+Future<web.FileSystemDirectoryHandle> createDirectoryByPath(
   web.FileSystemDirectoryHandle root,
   String path,
+) async {
+  final parts = path.split('/');
+  var current = root;
+  for (var i = 0; i < parts.length; i++) {
+    final name = parts[i];
+    final optionsAny = JSObject();
+    optionsAny['create'] = true.toJS;
+    final promise = current.callMethod('getDirectoryHandle'.toJS, name.toJS, optionsAny) as JSPromise;
+    current = await promise.toDart as web.FileSystemDirectoryHandle;
+  }
+  return current;
+}
+
+Future<void> deleteEntryByPath(
+  web.FileSystemDirectoryHandle root,
+  String path,
+  {bool isDirectory = false}
 ) async {
   final parts = path.split('/');
   var current = root;
@@ -69,7 +87,7 @@ Future<void> deleteFileByPath(
   }
   
   final optionsAny = JSObject();
-  optionsAny['recursive'] = false.toJS;
+  optionsAny['recursive'] = isDirectory.toJS;
   final promise = current.callMethod('removeEntry'.toJS, parts.last.toJS, optionsAny) as JSPromise;
   await promise.toDart;
 }
