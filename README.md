@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo/syncode.dev_logo.png" width="500" alt="Syncode.dev Logo">
+  <img src="assets/logo/syncode_logo.png" width="500" alt="Syncode.dev Logo">
 </p>
 
 ### Code together. In your editor.
@@ -572,66 +572,66 @@ Syncode history exists to make the **live session safe and recoverable.**
 
 ### v0.1 — Browser filesystem
 
-- [ ] Flutter Web foundation
-- [ ] File System Access API integration
-- [ ] Select authorized project directory
-- [ ] Read and write project files
-- [ ] Persist directory handles with IndexedDB
-- [ ] Persistent permission flow
-- [ ] FileSystemObserver prototype
+- [x] Flutter Web foundation
+- [x] File System Access API integration
+- [x] Select authorized project directory
+- [x] Read and write project files
+- [x] Persist directory handles with IndexedDB
+- [x] Persistent permission flow
+- [x] FileSystemObserver prototype
 
 ### v0.2 — Rooms
 
-- [ ] Create room without account
-- [ ] Join room using code
-- [ ] Firebase room state
-- [ ] Participant presence
-- [ ] Node.js collaboration server
-- [ ] WebSocket connection
+- [x] Create room without account
+- [x] Join room using code
+- [x] Firebase room state (Substituído por Node.js in-memory no momento)
+- [x] Participant presence
+- [x] Node.js collaboration server
+- [x] WebSocket connection
 
 ### v0.3 — Basic synchronization
 
-- [ ] Detect external editor changes
-- [ ] Synchronize basic file modifications
-- [ ] Initial project reconciliation
-- [ ] File checksums
-- [ ] `.syncodeignore`
-- [ ] Operation IDs
-- [ ] Sync-loop prevention
+- [x] Detect external editor changes
+- [x] Synchronize basic file modifications
+- [x] Initial project reconciliation
+- [x] File checksums
+- [x] `.syncodeignore` (Parcial)
+- [x] Operation IDs
+- [x] Sync-loop prevention
 
 ### v0.4 — Efficient sync
 
-- [ ] Diff / patch synchronization
-- [ ] File creation
-- [ ] File deletion
-- [ ] Directory creation
-- [ ] Rename detection
-- [ ] Connection recovery
+- [x] Diff / patch synchronization (Delta Sync via hash comparison)
+- [x] File creation
+- [x] File deletion
+- [x] Directory creation
+- [x] Rename detection
+- [x] Connection recovery
 
 ### v0.5 — Concurrent collaboration
 
 - [ ] Conflict detection
-- [ ] Concurrent file changes
+- [x] Concurrent file changes (Tratamento inicial)
 - [ ] Merge strategies
 - [ ] OT / CRDT research
 - [ ] OT / CRDT prototype
 
 ### v0.6 — Screen sharing
 
-- [ ] WebRTC screen sharing
-- [ ] Multiple viewers
-- [ ] Stream controls
+- [x] WebRTC screen sharing
+- [x] Multiple viewers (Full Mesh P2P Grid)
+- [x] Stream controls (Mute, Fullscreen Hover)
 
 ### v0.7 — Presence & permissions
 
-- [ ] Participant presence
-- [ ] Active file indicators
-- [ ] Per-user permissions
-- [ ] Read-only participants
+- [x] Participant presence
+- [x] Active file indicators (Status messages de Sync)
+- [x] Per-user permissions (Pair Programming Request)
+- [x] Read-only participants (Visitantes sem permissão de sync)
 
 ### v0.8 — Recovery
 
-- [ ] Session history
+- [x] Session history (Chat Real-Time e Status)
 - [ ] Snapshots
 - [ ] Restore points
 - [ ] Change inspection
