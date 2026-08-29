@@ -77,12 +77,14 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             
             final fileHandle = await getFileHandleByPath(_directoryHandle!, path);
             final writable = await fileHandle.createWritable().toDart;
-            await writable.write(payload.toJS).toDart;
+            
+            final bytes = base64Decode(payload);
+            await writable.write(bytes.toJS).toDart;
             await writable.close().toDart;
             
             _projectManifest[path] = hash;
             setState(() {
-              _statusMessage = 'Arquivo [$path] atualizado remotamente via WS!';
+              _statusMessage = 'Arquivo [$path] atualizado remotamente!';
             });
           } else if (data['type'] == 'FILE_DELETE') {
             final path = data['path'] as String;
@@ -125,13 +127,20 @@ class _SyncodeHomeState extends State<SyncodeHome> {
           } else if (data['type'] == 'REQUEST_FULL_SYNC') {
             if (_projectManifest.isNotEmpty && _directoryHandle != null) {
               setState(() {
-                _statusMessage = 'Enviando projeto completo para a rede...';
+                _statusMessage = 'Calculando delta do projeto...';
               });
+              
+              final remoteManifest = Map<String, dynamic>.from(data['manifest'] ?? {});
               
               int sent = 0;
               for (final entry in _projectManifest.entries) {
                 final path = entry.key;
                 final isDirectory = entry.value == 'DIRECTORY';
+                
+                // Delta Sync: só envia se o peer não tiver ou o hash for diferente
+                if (remoteManifest[path] == entry.value) {
+                  continue;
+                }
                 
                 if (isDirectory) {
                   final message = jsonEncode({
@@ -163,7 +172,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
               }
               
               setState(() {
-                _statusMessage = 'Sincronização completa despachada ($sent itens)!';
+                _statusMessage = 'Sincronização delta despachada ($sent itens alterados)!';
               });
             }
           }
@@ -286,8 +295,14 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   Future<String?> _readFileHandleContent(web.FileSystemFileHandle fileHandle) async {
     try {
       final file = await fileHandle.getFile().toDart;
-      final dynamic textAny = await file.text().toDart;
-      return textAny.toString();
+      
+      // Ignora arquivos > 10MB por segurança na RAM/WebSocket
+      if (file.size > 10 * 1024 * 1024) return null;
+      
+      final dynamic bufferAny = await file.arrayBuffer().toDart;
+      final jsBuffer = bufferAny as JSArrayBuffer;
+      final bytes = jsBuffer.toDart.asUint8List();
+      return base64Encode(bytes);
     } catch (e) {
       debugPrint(e.toString());
       return null;
@@ -316,7 +331,10 @@ class _SyncodeHomeState extends State<SyncodeHome> {
 
   void _requestFullSync() {
     if (_channel != null) {
-      final message = jsonEncode({'type': 'REQUEST_FULL_SYNC'});
+      final message = jsonEncode({
+        'type': 'REQUEST_FULL_SYNC',
+        'manifest': _projectManifest,
+      });
       _channel!.sink.add(message);
       setState(() {
         _statusMessage = 'Solicitação de sincronização enviada!';
