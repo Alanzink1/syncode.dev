@@ -76,12 +76,39 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             final path = data['path'] as String;
             _remoteWrites[path] = 'DELETED';
             
-            await deleteFileByPath(_directoryHandle!, path);
+            try {
+              await deleteEntryByPath(_directoryHandle!, path);
+            } catch (_) {}
+            
             _projectManifest.remove(path);
             _lastModifiedMap.remove(path);
             
             setState(() {
               _statusMessage = 'Arquivo [$path] deletado remotamente via WS!';
+            });
+          } else if (data['type'] == 'DIR_CREATE') {
+            final path = data['path'] as String;
+            _remoteWrites[path] = 'DIR_CREATED';
+            
+            await createDirectoryByPath(_directoryHandle!, path);
+            _projectManifest[path] = 'DIRECTORY';
+            
+            setState(() {
+              _statusMessage = 'Pasta [$path] criada remotamente via WS!';
+            });
+          } else if (data['type'] == 'DIR_DELETE') {
+            final path = data['path'] as String;
+            _remoteWrites[path] = 'DELETED';
+            
+            try {
+              await deleteEntryByPath(_directoryHandle!, path, isDirectory: true);
+            } catch (_) {}
+            
+            _projectManifest.remove(path);
+            _lastModifiedMap.remove(path);
+            
+            setState(() {
+              _statusMessage = 'Pasta [$path] deletada remotamente via WS!';
             });
           }
         } catch (e) {
@@ -112,39 +139,59 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     
     final currentScanPaths = <String>{};
     
-    await scanDirectory(_directoryHandle!, '', (path, fileHandle) async {
+    await scanDirectory(_directoryHandle!, '', (path, handle, kind) async {
       currentScanPaths.add(path);
       try {
-        final file = await fileHandle.getFile().toDart;
-        final currentModified = file.lastModified;
-        final lastModified = _lastModifiedMap[path] ?? 0;
-        
-        if (currentModified > lastModified) {
-          _lastModifiedMap[path] = currentModified;
+        if (kind == 'file') {
+          final fileHandle = handle as web.FileSystemFileHandle;
+          final file = await fileHandle.getFile().toDart;
+          final currentModified = file.lastModified;
+          final lastModified = _lastModifiedMap[path] ?? 0;
           
-          final content = await _readFileHandleContent(fileHandle);
-          if (content != null) {
-            final hash = hashFileContent(content);
+          if (currentModified > lastModified) {
+            _lastModifiedMap[path] = currentModified;
             
-            if (_remoteWrites[path] == hash) {
-              _projectManifest[path] = hash;
-              _remoteWrites.remove(path);
-              return;
+            final content = await _readFileHandleContent(fileHandle);
+            if (content != null) {
+              final hash = hashFileContent(content);
+              
+              if (_remoteWrites[path] == hash) {
+                _projectManifest[path] = hash;
+                _remoteWrites.remove(path);
+                return;
+              }
+              
+              if (_projectManifest[path] != hash) {
+                _projectManifest[path] = hash;
+                final message = jsonEncode({
+                  'type': 'FILE_UPDATE',
+                  'path': path,
+                  'payload': content,
+                  'hash': hash,
+                });
+                _channel?.sink.add(message);
+                setState(() {
+                  _statusMessage = 'Alteração em [$path] despachada via WS!';
+                });
+              }
             }
-            
-            if (_projectManifest[path] != hash) {
-              _projectManifest[path] = hash;
-              final message = jsonEncode({
-                'type': 'FILE_UPDATE',
-                'path': path,
-                'payload': content,
-                'hash': hash,
-              });
-              _channel?.sink.add(message);
-              setState(() {
-                _statusMessage = 'Alteração em [$path] despachada via WS!';
-              });
-            }
+          }
+        } else if (kind == 'directory') {
+          if (_remoteWrites[path] == 'DIR_CREATED') {
+            _projectManifest[path] = 'DIRECTORY';
+            _remoteWrites.remove(path);
+            return;
+          }
+          if (_projectManifest[path] != 'DIRECTORY') {
+            _projectManifest[path] = 'DIRECTORY';
+            final message = jsonEncode({
+              'type': 'DIR_CREATE',
+              'path': path,
+            });
+            _channel?.sink.add(message);
+            setState(() {
+              _statusMessage = 'Criação de pasta [$path] despachada!';
+            });
           }
         }
       } catch (e) {
@@ -153,7 +200,11 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     });
 
     final deletedPaths = _projectManifest.keys.where((p) => !currentScanPaths.contains(p)).toList();
+    deletedPaths.sort((a, b) => b.length.compareTo(a.length));
+
     for (final path in deletedPaths) {
+      final isDirectory = _projectManifest[path] == 'DIRECTORY';
+      
       if (_remoteWrites[path] == 'DELETED') {
         _projectManifest.remove(path);
         _lastModifiedMap.remove(path);
@@ -165,7 +216,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
       _lastModifiedMap.remove(path);
       
       final message = jsonEncode({
-        'type': 'FILE_DELETE',
+        'type': isDirectory ? 'DIR_DELETE' : 'FILE_DELETE',
         'path': path,
       });
       _channel?.sink.add(message);
@@ -214,10 +265,14 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     });
     
     final newManifest = <String, String>{};
-    await scanDirectory(_directoryHandle!, '', (path, fileHandle) async {
-      final content = await _readFileHandleContent(fileHandle);
-      if (content != null) {
-        newManifest[path] = hashFileContent(content);
+    await scanDirectory(_directoryHandle!, '', (path, handle, kind) async {
+      if (kind == 'file') {
+        final content = await _readFileHandleContent(handle as web.FileSystemFileHandle);
+        if (content != null) {
+          newManifest[path] = hashFileContent(content);
+        }
+      } else if (kind == 'directory') {
+        newManifest[path] = 'DIRECTORY';
       }
     });
 

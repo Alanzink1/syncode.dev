@@ -22,6 +22,10 @@ wss.on('connection', (ws: WebSocket) => {
         console.log(`[FILE_UPDATE] path: ${parsed.path}, hash: ${parsed.hash}`);
       } else if (parsed.type === 'FILE_DELETE') {
         console.log(`[FILE_DELETE] path: ${parsed.path}`);
+      } else if (parsed.type === 'DIR_CREATE') {
+        console.log(`[DIR_CREATE] path: ${parsed.path}`);
+      } else if (parsed.type === 'DIR_DELETE') {
+        console.log(`[DIR_DELETE] path: ${parsed.path}`);
       }
     } catch (e) {
       console.log(`Received message, size: ${data.length} bytes`);
