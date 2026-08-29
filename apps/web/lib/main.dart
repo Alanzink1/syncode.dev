@@ -110,6 +110,50 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             setState(() {
               _statusMessage = 'Pasta [$path] deletada remotamente via WS!';
             });
+          } else if (data['type'] == 'REQUEST_FULL_SYNC') {
+            if (_projectManifest.isNotEmpty && _directoryHandle != null) {
+              setState(() {
+                _statusMessage = 'Enviando projeto completo para a rede...';
+              });
+              
+              int sent = 0;
+              for (final entry in _projectManifest.entries) {
+                final path = entry.key;
+                final isDirectory = entry.value == 'DIRECTORY';
+                
+                if (isDirectory) {
+                  final message = jsonEncode({
+                    'type': 'DIR_CREATE',
+                    'path': path,
+                  });
+                  _channel?.sink.add(message);
+                } else {
+                  try {
+                    final fileHandle = await getFileHandleByPath(_directoryHandle!, path);
+                    final content = await _readFileHandleContent(fileHandle);
+                    if (content != null) {
+                      final message = jsonEncode({
+                        'type': 'FILE_UPDATE',
+                        'path': path,
+                        'payload': content,
+                        'hash': entry.value,
+                      });
+                      _channel?.sink.add(message);
+                    }
+                  } catch (_) {}
+                }
+                
+                sent++;
+                // Throttle: pausa 50ms a cada 5 itens para evitar estouro de buffer no WS / CPU
+                if (sent % 5 == 0) {
+                  await Future.delayed(const Duration(milliseconds: 50));
+                }
+              }
+              
+              setState(() {
+                _statusMessage = 'Sincronização completa despachada ($sent itens)!';
+              });
+            }
           }
         } catch (e) {
           debugPrint(e.toString());
@@ -258,6 +302,16 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     }
   }
 
+  void _requestFullSync() {
+    if (_channel != null) {
+      final message = jsonEncode({'type': 'REQUEST_FULL_SYNC'});
+      _channel!.sink.add(message);
+      setState(() {
+        _statusMessage = 'Solicitação de sincronização enviada!';
+      });
+    }
+  }
+
   Future<void> _buildManifest() async {
     if (_directoryHandle == null) return;
     setState(() {
@@ -303,8 +357,16 @@ class _SyncodeHomeState extends State<SyncodeHome> {
             ElevatedButton.icon(
               onPressed: _onSelectFolder,
               icon: const Icon(Icons.folder_open),
-              label: const Text('Selecionar Pasta'),
+              label: const Text('Selecionar Pasta Local'),
             ),
+            if (_directoryHandle != null) ...[
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: _requestFullSync,
+                icon: const Icon(Icons.download),
+                label: const Text('Baixar Projeto da Rede'),
+              ),
+            ],
           ],
         ),
       ),

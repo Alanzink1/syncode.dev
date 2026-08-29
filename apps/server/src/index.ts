@@ -26,6 +26,8 @@ wss.on('connection', (ws: WebSocket) => {
         console.log(`[DIR_CREATE] path: ${parsed.path}`);
       } else if (parsed.type === 'DIR_DELETE') {
         console.log(`[DIR_DELETE] path: ${parsed.path}`);
+      } else if (parsed.type === 'REQUEST_FULL_SYNC') {
+        console.log(`[REQUEST_FULL_SYNC] A client requested a full project sync`);
       }
     } catch (e) {
       console.log(`Received message, size: ${data.length} bytes`);
