@@ -7,6 +7,7 @@ import 'package:syncode_web/utils/crypto_utils.dart';
 import 'package:syncode_web/utils/directory_utils.dart';
 import 'package:web/web.dart' as web;
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 void main() {
   runApp(const SyncodeApp());
@@ -57,9 +58,13 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   bool _iAmHost = false;
   bool _canPairProgram = false;
 
+  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
+  bool _isScreenSharing = false;
+
   @override
   void initState() {
     super.initState();
+    _localRenderer.initialize();
   }
 
   void _connectToRoom(String action, String roomId, String password, String username) {
@@ -248,7 +253,30 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   void dispose() {
     _pollingTimer?.cancel();
     _channel?.sink.close();
+    _localRenderer.dispose();
     super.dispose();
+  }
+
+  Future<void> _startScreenShare() async {
+    try {
+      final mediaConstraints = <String, dynamic>{
+        'audio': false,
+        'video': true
+      };
+      var stream = await navigator.mediaDevices.getDisplayMedia(mediaConstraints);
+      _localRenderer.srcObject = stream;
+      setState(() {
+        _isScreenSharing = true;
+      });
+      
+      // Sinalização inicial P2P informando que a transmissão começou
+      _channel?.sink.add(jsonEncode({
+        'type': 'WEBRTC_OFFER',
+        'message': 'Transmissão de tela iniciada!'
+      }));
+    } catch (e) {
+      debugPrint(e.toString());
+    }
   }
 
   void _startPolling() {
@@ -547,7 +575,24 @@ class _SyncodeHomeState extends State<SyncodeHome> {
               ),
               Expanded(
                 child: Center(
-                  child: Text('Ninguém está transmitindo a tela ainda.', style: TextStyle(color: Colors.white54)),
+                  child: _isScreenSharing 
+                    ? RTCVideoView(_localRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text('Ninguém está transmitindo ainda.', style: TextStyle(color: Colors.white54)),
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            onPressed: _startScreenShare,
+                            icon: const Icon(Icons.screen_share),
+                            label: const Text('Compartilhar tela'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.teal,
+                              foregroundColor: Colors.white,
+                            ),
+                          )
+                        ]
+                      )
                 ),
               ),
               Container(
