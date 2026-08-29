@@ -39,9 +39,9 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   web.FileSystemDirectoryHandle? _directoryHandle;
   String _statusMessage = 'Aguardando seleção da pasta local...';
   Timer? _pollingTimer;
-  Map<String, int> _lastModifiedMap = {};
+  final Map<String, int> _lastModifiedMap = {};
   WebSocketChannel? _channel;
-  Map<String, String> _remoteWrites = {};
+  final Map<String, String> _remoteWrites = {};
   Map<String, String> _projectManifest = {};
 
   @override
@@ -343,7 +343,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('Syncode.dev - v0.1'),
+        title: const Text('Syncode.dev - v0.3'),
       ),
       body: Center(
         child: Column(
