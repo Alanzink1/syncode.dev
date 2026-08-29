@@ -59,12 +59,47 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   bool _canPairProgram = false;
 
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
+  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   bool _isScreenSharing = false;
+  
+  // WebRTC P2P (Estrela)
+  MediaStream? _localStream;
+  String? _remoteStreamId; // Indica quem está transmitindo para nós
+  final Map<String, RTCPeerConnection> _peerConnections = {};
 
   @override
   void initState() {
     super.initState();
     _localRenderer.initialize();
+    _remoteRenderer.initialize();
+  }
+
+  Future<RTCPeerConnection> _createPeerConnection(String targetUserId) async {
+    final configuration = {
+      "iceServers": [
+        {"url": "stun:stun.l.google.com:19302"},
+      ]
+    };
+    
+    final pc = await createPeerConnection(configuration);
+    _peerConnections[targetUserId] = pc;
+    
+    pc.onIceCandidate = (candidate) {
+      _channel?.sink.add(jsonEncode({
+        'type': 'WEBRTC_ICE',
+        'targetUserId': targetUserId,
+        'candidate': candidate.toMap(),
+      }));
+    };
+    
+    pc.onTrack = (event) {
+      if (event.track.kind == 'video') {
+        _remoteRenderer.srcObject = event.streams[0];
+        setState(() {}); // Força refresh pra mostrar o vídeo
+      }
+    };
+    
+    return pc;
   }
 
   void _connectToRoom(String action, String roomId, String password, String username) {
@@ -107,6 +142,13 @@ class _SyncodeHomeState extends State<SyncodeHome> {
           } else if (data['type'] == 'USER_LEFT') {
              setState(() {
                _participants.removeWhere((p) => p['userId'] == data['userId']);
+               // Limpa conexão P2P se houver
+               _peerConnections[data['userId']]?.close();
+               _peerConnections.remove(data['userId']);
+               if (_remoteStreamId == data['userId']) {
+                 _remoteStreamId = null;
+                 _remoteRenderer.srcObject = null;
+               }
              });
           } else if (data['type'] == 'CHAT_MESSAGE') {
              setState(() {
@@ -132,7 +174,9 @@ class _SyncodeHomeState extends State<SyncodeHome> {
                _statusMessage = data['message'];
                if (!_isConnected) _channel?.sink.close();
              });
-          } else if (data['type'] == 'FILE_UPDATE') {
+          }
+          // --- Sincronização de Arquivos ---
+          else if (data['type'] == 'FILE_UPDATE') {
             final path = data['path'] as String;
             final payload = data['payload'] as String;
             final hash = hashFileContent(payload);
@@ -153,92 +197,113 @@ class _SyncodeHomeState extends State<SyncodeHome> {
           } else if (data['type'] == 'FILE_DELETE') {
             final path = data['path'] as String;
             _remoteWrites[path] = 'DELETED';
-            
-            try {
-              await deleteEntryByPath(_directoryHandle!, path);
-            } catch (_) {}
-            
+            try { await deleteEntryByPath(_directoryHandle!, path); } catch (_) {}
             _projectManifest.remove(path);
             _lastModifiedMap.remove(path);
-            
-            setState(() {
-              _statusMessage = 'Arquivo [$path] deletado remotamente via WS!';
-            });
+            setState(() => _statusMessage = 'Arquivo [$path] deletado remotamente via WS!');
           } else if (data['type'] == 'DIR_CREATE') {
             final path = data['path'] as String;
             _remoteWrites[path] = 'DIR_CREATED';
-            
             await createDirectoryByPath(_directoryHandle!, path);
             _projectManifest[path] = 'DIRECTORY';
-            
-            setState(() {
-              _statusMessage = 'Pasta [$path] criada remotamente via WS!';
-            });
+            setState(() => _statusMessage = 'Pasta [$path] criada remotamente via WS!');
           } else if (data['type'] == 'DIR_DELETE') {
             final path = data['path'] as String;
             _remoteWrites[path] = 'DELETED';
-            
-            try {
-              await deleteEntryByPath(_directoryHandle!, path, isDirectory: true);
-            } catch (_) {}
-            
+            try { await deleteEntryByPath(_directoryHandle!, path, isDirectory: true); } catch (_) {}
             _projectManifest.remove(path);
             _lastModifiedMap.remove(path);
-            
-            setState(() {
-              _statusMessage = 'Pasta [$path] deletada remotamente via WS!';
-            });
+            setState(() => _statusMessage = 'Pasta [$path] deletada remotamente via WS!');
           } else if (data['type'] == 'REQUEST_FULL_SYNC') {
             if (_projectManifest.isNotEmpty && _directoryHandle != null) {
-              setState(() {
-                _statusMessage = 'Calculando delta do projeto...';
-              });
-              
+              setState(() => _statusMessage = 'Calculando delta do projeto...');
               final remoteManifest = Map<String, dynamic>.from(data['manifest'] ?? {});
-              
               int sent = 0;
               for (final entry in _projectManifest.entries) {
                 final path = entry.key;
                 final isDirectory = entry.value == 'DIRECTORY';
-                
-                // Delta Sync: só envia se o peer não tiver ou o hash for diferente
-                if (remoteManifest[path] == entry.value) {
-                  continue;
-                }
+                if (remoteManifest[path] == entry.value) continue;
                 
                 if (isDirectory) {
-                  final message = jsonEncode({
-                    'type': 'DIR_CREATE',
-                    'path': path,
-                  });
-                  _channel?.sink.add(message);
+                  _channel?.sink.add(jsonEncode({'type': 'DIR_CREATE', 'path': path}));
                 } else {
                   try {
                     final fileHandle = await getFileHandleByPath(_directoryHandle!, path);
                     final content = await _readFileHandleContent(fileHandle);
                     if (content != null) {
-                      final message = jsonEncode({
-                        'type': 'FILE_UPDATE',
-                        'path': path,
-                        'payload': content,
-                        'hash': entry.value,
-                      });
-                      _channel?.sink.add(message);
+                      _channel?.sink.add(jsonEncode({
+                        'type': 'FILE_UPDATE', 'path': path, 'payload': content, 'hash': entry.value,
+                      }));
                     }
                   } catch (_) {}
                 }
-                
                 sent++;
-                // Throttle: pausa 50ms a cada 5 itens para evitar estouro de buffer no WS / CPU
-                if (sent % 5 == 0) {
-                  await Future.delayed(const Duration(milliseconds: 50));
-                }
+                if (sent % 5 == 0) await Future.delayed(const Duration(milliseconds: 50));
               }
-              
-              setState(() {
-                _statusMessage = 'Sincronização delta despachada ($sent itens alterados)!';
-              });
+              setState(() => _statusMessage = 'Sincronização delta despachada ($sent itens alterados)!');
             }
+          }
+          // --- WebRTC Signaling ---
+          else if (data['type'] == 'WEBRTC_STREAM_AVAILABLE') {
+            final senderId = data['senderId'];
+            if (senderId == _myUserId) return;
+            setState(() => _remoteStreamId = senderId);
+            
+            // Cria peer e avisa que quer assistir (Offer recvonly)
+            final pc = await _createPeerConnection(senderId);
+            pc.addTransceiver(kind: RTCRtpMediaType.RTCRtpMediaTypeVideo, init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly));
+            final offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            
+            _channel?.sink.add(jsonEncode({
+              'type': 'WEBRTC_OFFER',
+              'targetUserId': senderId,
+              'offer': offer.toMap(),
+            }));
+            
+          } else if (data['type'] == 'WEBRTC_STREAM_STOPPED') {
+             if (_remoteStreamId == data['senderId']) {
+               _remoteRenderer.srcObject = null;
+               _peerConnections[data['senderId']]?.close();
+               _peerConnections.remove(data['senderId']);
+               setState(() => _remoteStreamId = null);
+             }
+          } else if (data['type'] == 'WEBRTC_OFFER') {
+             // Host recebe Offer de um visitante querendo ver a tela
+             final senderId = data['senderId'];
+             final pc = await _createPeerConnection(senderId);
+             
+             if (_localStream != null) {
+               _localStream!.getTracks().forEach((track) {
+                 pc.addTrack(track, _localStream!);
+               });
+             }
+             
+             await pc.setRemoteDescription(RTCSessionDescription(data['offer']['sdp'], data['offer']['type']));
+             final answer = await pc.createAnswer();
+             await pc.setLocalDescription(answer);
+             
+             _channel?.sink.add(jsonEncode({
+               'type': 'WEBRTC_ANSWER',
+               'targetUserId': senderId,
+               'answer': answer.toMap(),
+             }));
+          } else if (data['type'] == 'WEBRTC_ANSWER') {
+             final senderId = data['senderId'];
+             final pc = _peerConnections[senderId];
+             if (pc != null) {
+               await pc.setRemoteDescription(RTCSessionDescription(data['answer']['sdp'], data['answer']['type']));
+             }
+          } else if (data['type'] == 'WEBRTC_ICE') {
+             final senderId = data['senderId'];
+             final pc = _peerConnections[senderId];
+             if (pc != null) {
+               await pc.addCandidate(RTCIceCandidate(
+                 data['candidate']['candidate'],
+                 data['candidate']['sdpMid'],
+                 data['candidate']['sdpMLineIndex'],
+               ));
+             }
           }
         } catch (e) {
           debugPrint(e.toString());
@@ -254,6 +319,10 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     _pollingTimer?.cancel();
     _channel?.sink.close();
     _localRenderer.dispose();
+    _remoteRenderer.dispose();
+    for (var pc in _peerConnections.values) {
+      pc.close();
+    }
     super.dispose();
   }
 
@@ -263,20 +332,36 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         'audio': false,
         'video': true
       };
-      var stream = await navigator.mediaDevices.getDisplayMedia(mediaConstraints);
-      _localRenderer.srcObject = stream;
+      _localStream = await navigator.mediaDevices.getDisplayMedia(mediaConstraints);
+      _localRenderer.srcObject = _localStream;
       setState(() {
         _isScreenSharing = true;
       });
       
-      // Sinalização inicial P2P informando que a transmissão começou
       _channel?.sink.add(jsonEncode({
-        'type': 'WEBRTC_OFFER',
-        'message': 'Transmissão de tela iniciada!'
+        'type': 'WEBRTC_STREAM_AVAILABLE',
       }));
     } catch (e) {
       debugPrint(e.toString());
     }
+  }
+
+  void _stopScreenShare() {
+    _localStream?.getTracks().forEach((track) => track.stop());
+    _localStream = null;
+    _localRenderer.srcObject = null;
+    for (var pc in _peerConnections.values) {
+      pc.close();
+    }
+    _peerConnections.clear();
+    
+    setState(() {
+      _isScreenSharing = false;
+    });
+    
+    _channel?.sink.add(jsonEncode({
+      'type': 'WEBRTC_STREAM_STOPPED',
+    }));
   }
 
   void _startPolling() {
@@ -382,10 +467,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   Future<String?> _readFileHandleContent(web.FileSystemFileHandle fileHandle) async {
     try {
       final file = await fileHandle.getFile().toDart;
-      
-      // Ignora arquivos > 10MB por segurança na RAM/WebSocket
       if (file.size > 10 * 1024 * 1024) return null;
-      
       final dynamic bufferAny = await file.arrayBuffer().toDart;
       final jsBuffer = bufferAny as JSArrayBuffer;
       final bytes = jsBuffer.toDart.asUint8List();
@@ -451,8 +533,6 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     setState(() {
       _statusMessage = 'Manifest gerado! (${newManifest.length} arquivos mapeados)';
     });
-    
-    debugPrint(jsonEncode(newManifest));
   }
 
   @override
@@ -561,6 +641,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
                   IconButton(
                     icon: const Icon(Icons.exit_to_app, color: Colors.red),
                     onPressed: () {
+                      _stopScreenShare();
                       _channel?.sink.close();
                       setState(() {
                         _isConnected = false;
@@ -577,22 +658,24 @@ class _SyncodeHomeState extends State<SyncodeHome> {
                 child: Center(
                   child: _isScreenSharing 
                     ? RTCVideoView(_localRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)
-                    : Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Text('Ninguém está transmitindo ainda.', style: TextStyle(color: Colors.white54)),
-                          const SizedBox(height: 16),
-                          ElevatedButton.icon(
-                            onPressed: _startScreenShare,
-                            icon: const Icon(Icons.screen_share),
-                            label: const Text('Compartilhar tela'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.teal,
-                              foregroundColor: Colors.white,
-                            ),
-                          )
-                        ]
-                      )
+                    : _remoteStreamId != null
+                      ? RTCVideoView(_remoteRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain)
+                      : Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Text('Ninguém está transmitindo ainda.', style: TextStyle(color: Colors.white54)),
+                            const SizedBox(height: 16),
+                            ElevatedButton.icon(
+                              onPressed: _startScreenShare,
+                              icon: const Icon(Icons.screen_share),
+                              label: const Text('Compartilhar tela'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.teal,
+                                foregroundColor: Colors.white,
+                              ),
+                            )
+                          ]
+                        )
                 ),
               ),
               Container(
@@ -602,19 +685,40 @@ class _SyncodeHomeState extends State<SyncodeHome> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(_statusMessage, style: const TextStyle(color: Colors.amber)),
-                    const SizedBox(width: 24),
-                    ElevatedButton.icon(
-                      onPressed: _canPairProgram ? _onSelectFolder : null,
-                      icon: const Icon(Icons.folder),
-                      label: const Text('Selecionar Pasta Local'),
-                    ),
-                    if (_directoryHandle != null) ...[
-                      const SizedBox(width: 16),
+                    if (_isScreenSharing) ...[
+                      const SizedBox(width: 24),
                       ElevatedButton.icon(
-                        onPressed: _canPairProgram ? _requestFullSync : null,
-                        icon: const Icon(Icons.download),
-                        label: const Text('Sincronizar Tudo'),
+                        onPressed: _stopScreenShare,
+                        icon: const Icon(Icons.stop_screen_share),
+                        label: const Text('Parar Transmissão'),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
                       ),
+                    ],
+                    const SizedBox(width: 24),
+                    if (!_iAmHost && !_canPairProgram)
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          _channel?.sink.add(jsonEncode({'type': 'REQUEST_PAIR_PROGRAM'}));
+                          setState(() => _statusMessage = 'Solicitação enviada ao Host!');
+                        },
+                        icon: const Icon(Icons.front_hand),
+                        label: const Text('Solicitar Acesso (Pair Programming)'),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
+                      )
+                    else ...[
+                      ElevatedButton.icon(
+                        onPressed: _onSelectFolder,
+                        icon: const Icon(Icons.folder),
+                        label: const Text('Selecionar Pasta Local'),
+                      ),
+                      if (_directoryHandle != null) ...[
+                        const SizedBox(width: 16),
+                        ElevatedButton.icon(
+                          onPressed: _requestFullSync,
+                          icon: const Icon(Icons.download),
+                          label: const Text('Sincronizar Tudo'),
+                        ),
+                      ]
                     ]
                   ],
                 ),
