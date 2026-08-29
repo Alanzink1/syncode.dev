@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -127,8 +128,10 @@ class _SyncodeHomeState extends State<SyncodeHome> {
 
   Future<void> _onSelectFolder() async {
     try {
-      final options = web.DirectoryPickerOptions(mode: 'readwrite');
-      final handle = await web.window.showDirectoryPicker(options).toDart;
+      final jsOptions = JSObject();
+      jsOptions['mode'] = 'readwrite'.toJS;
+      final promise = globalContext.callMethod('showDirectoryPicker'.toJS, jsOptions) as JSPromise;
+      final handle = await promise.toDart as web.FileSystemDirectoryHandle;
       
       setState(() {
         _directoryHandle = handle;
