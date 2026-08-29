@@ -1,4 +1,5 @@
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'package:web/web.dart' as web;
 import 'ignore_utils.dart';
 
@@ -19,7 +20,7 @@ Future<List<web.FileSystemHandle>> getDirectoryEntries(web.FileSystemDirectoryHa
 Future<void> scanDirectory(
   web.FileSystemDirectoryHandle dirHandle,
   String currentPath,
-  void Function(String path, web.FileSystemFileHandle fileHandle) onFile,
+  Future<void> Function(String path, web.FileSystemFileHandle fileHandle) onFile,
 ) async {
   final entries = await getDirectoryEntries(dirHandle);
   for (final entry in entries) {
@@ -30,7 +31,25 @@ Future<void> scanDirectory(
     if (entry.kind == 'directory') {
       await scanDirectory(entry as web.FileSystemDirectoryHandle, path, onFile);
     } else if (entry.kind == 'file') {
-      onFile(path, entry as web.FileSystemFileHandle);
+      await onFile(path, entry as web.FileSystemFileHandle);
     }
   }
+}
+
+Future<web.FileSystemFileHandle> getFileHandleByPath(
+  web.FileSystemDirectoryHandle root,
+  String path,
+) async {
+  final parts = path.split('/');
+  var current = root;
+  for (var i = 0; i < parts.length - 1; i++) {
+    final name = parts[i];
+    final optionsAny = JSObject();
+    optionsAny['create'] = true.toJS;
+    final promise = current.callMethod('getDirectoryHandle'.toJS, name.toJS, optionsAny) as JSPromise;
+    current = await promise.toDart as web.FileSystemDirectoryHandle;
+  }
+  final options = web.FileSystemGetFileOptions(create: true);
+  final fileHandle = await current.getFileHandle(parts.last, options).toDart;
+  return fileHandle as web.FileSystemFileHandle;
 }
