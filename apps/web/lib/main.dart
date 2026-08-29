@@ -37,6 +37,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   Timer? _pollingTimer;
   int _lastModified = 0;
   WebSocketChannel? _channel;
+  String _lastWrittenContent = '';
 
   @override
   void initState() {
@@ -47,7 +48,15 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   void _connectWebSocket() {
     try {
       _channel = WebSocketChannel.connect(Uri.parse('ws://localhost:8080'));
-      _channel!.stream.listen((message) {
+      _channel!.stream.listen((message) async {
+        final content = message.toString();
+        _lastWrittenContent = content;
+        final success = await _writeFileContent('demo.txt', content);
+        if (success) {
+          setState(() {
+            _statusMessage = 'Arquivo atualizado remotamente via WS!';
+          });
+        }
       });
     } catch (e) {
     }
@@ -77,7 +86,8 @@ class _SyncodeHomeState extends State<SyncodeHome> {
       if (currentModified > _lastModified) {
         _lastModified = currentModified;
         final content = await _readFileContent(filename);
-        if (content != null) {
+        if (content != null && content != _lastWrittenContent) {
+          _lastWrittenContent = content;
           _channel?.sink.add(content);
           setState(() {
             _statusMessage = 'Arquivo alterado e enviado via WS! (Tamanho: ${content.length})';
