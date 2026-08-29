@@ -1,5 +1,3 @@
-import { WebSocketServer, WebSocket } from 'ws';
-import * as http from 'http';
 import { WebSocketServer } from 'ws';
 
 const rooms = new Map<string, Set<any>>();
@@ -39,12 +37,11 @@ wss.on('connection', function connection(ws: any) {
         console.log(`[REQUEST_FULL_SYNC] room: ${roomId}`);
       }
 
-      // Broadcast apenas para os clientes na mesma sala (exceto o próprio remetente)
       const roomClients = rooms.get(roomId);
       if (roomClients) {
         roomClients.forEach(function each(client: any) {
           if (client !== ws && client.readyState === 1) {
-            client.send(data);
+            client.send(data.toString());
           }
         });
       }

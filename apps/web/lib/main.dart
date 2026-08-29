@@ -43,16 +43,28 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   WebSocketChannel? _channel;
   final Map<String, String> _remoteWrites = {};
   Map<String, String> _projectManifest = {};
+  final TextEditingController _roomController = TextEditingController();
+  bool _isConnected = false;
 
   @override
   void initState() {
     super.initState();
-    _connectWebSocket();
   }
 
-  void _connectWebSocket() {
+  void _connectWebSocket(String roomId) {
     try {
       _channel = WebSocketChannel.connect(Uri.parse('ws://localhost:8080'));
+      
+      _channel!.sink.add(jsonEncode({
+        'type': 'JOIN_ROOM',
+        'roomId': roomId,
+      }));
+      
+      setState(() {
+        _isConnected = true;
+        _statusMessage = 'Conectado à sala: $roomId. Selecione a pasta.';
+      });
+
       _channel!.stream.listen((message) async {
         try {
           final data = jsonDecode(message.toString());
@@ -343,29 +355,60 @@ class _SyncodeHomeState extends State<SyncodeHome> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('Syncode.dev - v0.3'),
+        title: const Text('Syncode.dev - v0.4'),
       ),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Text(
-              _statusMessage,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _onSelectFolder,
-              icon: const Icon(Icons.folder_open),
-              label: const Text('Selecionar Pasta Local'),
-            ),
-            if (_directoryHandle != null) ...[
-              const SizedBox(height: 16),
-              ElevatedButton.icon(
-                onPressed: _requestFullSync,
-                icon: const Icon(Icons.download),
-                label: const Text('Baixar Projeto da Rede'),
+            if (!_isConnected) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 64, vertical: 16),
+                child: TextField(
+                  controller: _roomController,
+                  decoration: const InputDecoration(
+                    labelText: 'ID da Sala (ex: projeto-web)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
               ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  if (_roomController.text.trim().isNotEmpty) {
+                    _connectWebSocket(_roomController.text.trim());
+                  } else {
+                    setState(() {
+                      _statusMessage = 'Digite um ID para a sala primeiro.';
+                    });
+                  }
+                },
+                icon: const Icon(Icons.login),
+                label: const Text('Entrar na Sala'),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                _statusMessage,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Colors.red),
+              ),
+            ] else ...[
+              Text(
+                _statusMessage,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: _onSelectFolder,
+                icon: const Icon(Icons.folder_open),
+                label: const Text('Selecionar Pasta Local'),
+              ),
+              if (_directoryHandle != null) ...[
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: _requestFullSync,
+                  icon: const Icon(Icons.download),
+                  label: const Text('Baixar Projeto da Rede'),
+                ),
+              ],
             ],
           ],
         ),
