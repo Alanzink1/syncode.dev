@@ -33,6 +33,19 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   web.FileSystemDirectoryHandle? _directoryHandle;
   String _statusMessage = 'Aguardando seleção da pasta local...';
 
+  Future<String?> _readFileContent(String filename) async {
+    if (_directoryHandle == null) return null;
+    try {
+      final options = web.FileSystemGetFileOptions(create: true);
+      final fileHandle = await _directoryHandle!.getFileHandle(filename, options).toDart;
+      final file = await fileHandle.getFile().toDart;
+      final dynamic textAny = await file.text().toDart;
+      return textAny.toString();
+    } catch (e) {
+      return null;
+    }
+  }
+
   Future<void> _onSelectFolder() async {
     try {
       final options = web.DirectoryPickerOptions(mode: 'readwrite');
