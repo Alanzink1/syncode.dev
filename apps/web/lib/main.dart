@@ -60,6 +60,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         }
       });
     } catch (e) {
+      debugPrint(e.toString());
     }
   }
 
@@ -96,6 +97,7 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         }
       }
     } catch (e) {
+      debugPrint(e.toString());
     }
   }
 
