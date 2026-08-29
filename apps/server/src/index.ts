@@ -173,8 +173,22 @@ wss.on('connection', function connection(ws: any) {
         return;
       }
 
+      // --- SOLICITAÇÃO DE PAIR PROGRAMMING ---
+      if (parsed.type === 'REQUEST_PAIR_PROGRAM') {
+        const hostWs = room.hostWs;
+        if (hostWs && hostWs.readyState === 1) {
+          hostWs.send(JSON.stringify({
+            type: 'CHAT_MESSAGE',
+            sender: 'Sistema',
+            message: `O visitante ${me.username} solicitou acesso de Pair Programming!`,
+            timestamp: Date.now(),
+          }));
+        }
+        return;
+      }
+
       // --- WEBRTC SIGNALING ---
-      if (['WEBRTC_OFFER', 'WEBRTC_ANSWER', 'WEBRTC_ICE'].includes(parsed.type)) {
+      if (['WEBRTC_STREAM_AVAILABLE', 'WEBRTC_STREAM_STOPPED', 'WEBRTC_OFFER', 'WEBRTC_ANSWER', 'WEBRTC_ICE'].includes(parsed.type)) {
         parsed.senderId = me.userId; // Injeta quem mandou
         
         if (parsed.targetUserId) {
