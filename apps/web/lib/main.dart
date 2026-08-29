@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:js_interop';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() {
   runApp(const SyncodeApp());
@@ -35,10 +36,27 @@ class _SyncodeHomeState extends State<SyncodeHome> {
   String _statusMessage = 'Aguardando seleção da pasta local...';
   Timer? _pollingTimer;
   int _lastModified = 0;
+  WebSocketChannel? _channel;
+
+  @override
+  void initState() {
+    super.initState();
+    _connectWebSocket();
+  }
+
+  void _connectWebSocket() {
+    try {
+      _channel = WebSocketChannel.connect(Uri.parse('ws://localhost:8080'));
+      _channel!.stream.listen((message) {
+      });
+    } catch (e) {
+    }
+  }
 
   @override
   void dispose() {
     _pollingTimer?.cancel();
+    _channel?.sink.close();
     super.dispose();
   }
 
@@ -60,8 +78,9 @@ class _SyncodeHomeState extends State<SyncodeHome> {
         _lastModified = currentModified;
         final content = await _readFileContent(filename);
         if (content != null) {
+          _channel?.sink.add(content);
           setState(() {
-            _statusMessage = 'Arquivo alterado localmente! (Tamanho: ${content.length})';
+            _statusMessage = 'Arquivo alterado e enviado via WS! (Tamanho: ${content.length})';
           });
         }
       }
